@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Конфигурация артефакта для SignPath. Загружается в веб-портале SignPath
+  (Project -> Artifact configurations), если вы используете «pe-file» для одного exe.
+  Перед использованием сверьте схему с актуальной документацией SignPath:
+  https://docs.signpath.io/
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <pe-file>
+    <authenticode-sign />
+  </pe-file>
+</artifact-configuration>

@@ -1,0 +1,134 @@
+# Релиз: при пуше тега v*.*.* собирает установщик, подписывает через SignPath
+# и публикует GitHub Release вместе с latest.json для автообновления.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # создание релиза
+  id-token: write   # нужно для SignPath (trusted build)
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Версия из тега
+        id: ver
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Версия в коде совпадает с тегом
+        shell: bash
+        run: |
+          CODE_VER=$(grep -oP 'APP_VERSION = "\K[^"]+' osu_studio/studio_pro/config.py 2>/dev/null || grep -oP 'APP_VERSION = "\K[^"]+' studio_pro/config.py)
+          if [ "$CODE_VER" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "Версия в config.py ($CODE_VER) не совпадает с тегом (${{ steps.ver.outputs.version }})"; exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Зависимости и тесты
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+          $env:QT_QPA_PLATFORM = "offscreen"
+          python -m pytest -q studio_pro/tests
+
+      - name: Сборка папки (onedir)
+        run: python -m PyInstaller --noconfirm --clean build_exe.spec
+
+      - name: Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Установщик (неподписанный)
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" installer\osu_studio.iss
+
+      - name: Сохранить неподписанный установщик
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-unsigned
+          path: dist/installer/osu_studio_setup_*.exe
+          if-no-files-found: error
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    # Защита: ручное подтверждение владельцем (environment с required reviewers)
+    environment: signing
+    outputs:
+      signed-path: ${{ steps.signpath.outputs.signed-artifact-path }}
+    steps:
+      - name: Скачать неподписанный установщик
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-unsigned
+          path: unsigned
+
+      - name: Загрузить в GitHub Artifacts для SignPath
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-for-signpath
+          path: unsigned/*.exe
+
+      - name: Отправить на подпись SignPath
+        id: signpath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIG_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Сохранить подписанный установщик
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-signed
+          path: signed/*.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: installer-signed
+          path: signed
+
+      - name: Манифест обновления (хеш подписанного файла)
+        shell: bash
+        run: |
+          INSTALLER=$(ls signed/*.exe | head -n1)
+          TAG="${GITHUB_REF_NAME}"
+          NAME=$(basename "$INSTALLER")
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${NAME}"
+          python3 make_manifest.py "$INSTALLER" --version "${{ needs.build.outputs.version }}" \
+            --url "$URL" --notes "Версия ${{ needs.build.outputs.version }}" --out signed/latest.json
+
+      - name: Публикация релиза
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            signed/*.exe
+            signed/latest.json
+          generate_release_notes: true
