@@ -5,8 +5,10 @@
 (Mapperatorinator).
 
 ## Установка
+Windows-установщик подписывается через SignPath Foundation, certificate by SignPath Foundation
 Скачай последний `osu_studio_setup_<версия>.exe` в разделе [Releases](https://github.com/sk1pti/osu_studio/releases)
 и запусти. Windows 10/11.
+
 
 ## Запуск из исходников
 ```
